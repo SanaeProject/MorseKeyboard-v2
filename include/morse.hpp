@@ -9,7 +9,7 @@
 #define MORSE_MAX_LENGTH 5          // モールス信号の最大長
 #define MORSE_DAH_DURATION_MS 200   // モールス信号ダッシュ長
 #define MORSE_END_DURATION_MS 1000  // モールス信号終了判定時間
-#define MORSE_INTERVAL_MS     100   // ボタン押下、判定後待機時間
+#define MORSE_INTERVAL_MS     200   // ボタン押下、判定後待機時間
 
 // モールス信号構造体
 typedef struct {
@@ -72,6 +72,12 @@ private:
 
 protected:
     inline char _searchDictionary(uint8_t* signals){
+        Serial.print("signals:");
+        for(uint8_t i = 0; i < MORSE_MAX_LENGTH; i++){
+            Serial.print(signals[i]);
+        }
+        Serial.println();
+
         for(uint64_t i = 0; i < dictionaryLength; i++){
             const uint8_t* target = morseDictionary[i].code;
             bool isIncorrect = false;
@@ -87,8 +93,18 @@ protected:
 
         return '?';
     }
+    inline bool _getDahSignal(){
+        if(this->_dahSignalPin == UINT32_MAX) return false;
+        return digitalRead(this->_dahSignalPin) == LOW;
+    }
 
 public:
+    /**
+     * @brief モールス信号入力の初期化
+     * @param signalPin モールス信号入力ピン
+     * @param dahSignalPin 長音信号入力ピン(省略可)
+     * @note dahSignalPinを省略した場合、signalPinの押下時間で短音・長音を判定する
+     */
     void begin(uint32_t signalPin, uint32_t dahSignalPin = UINT32_MAX){
         this->_signalPin = signalPin;
         this->_dahSignalPin = dahSignalPin;
@@ -98,14 +114,21 @@ public:
             pinMode(this->_dahSignalPin, INPUT_PULLUP);
     }
 
+    /**
+     * @brief モールス信号の判定
+     * @return 判定結果の文字列
+     * @note 非同期で呼び出すことを想定しているため、判定結果がない場合はMORSE_KEY_NONEを返却する
+     */
     char getKey(){
         const bool signal = digitalRead(this->_signalPin) == LOW;
+        const bool dahSignal = this->_getDahSignal();
 
+        // 待機時間中は返却なし
         if(this->_intervalDuration.isRunning() && 
-            this->_intervalDuration.elapsed() < MORSE_INTERVAL_MS) return MORSE_KEY_NONE; // 判定後待機時間中は返却しない
+            this->_intervalDuration.elapsed() < MORSE_INTERVAL_MS) return MORSE_KEY_NONE;
 
         // キー判定開始
-        if(!this->_isStarted && signal){
+        if(!this->_isStarted && (signal || dahSignal)){
             this->_isStarted = true;
             this->_buttonPressDuration.start();
         }
@@ -133,6 +156,13 @@ public:
         }
         // 押下状態に過去と変更があった場合タイマーをリセット
         if(signal != this->_isPreviousPushed) this->_buttonPressDuration.start();
+
+        // 長音キーがある場合、長音キーの状態を確認して長音信号を追加する
+        if(dahSignal){
+            this->_signals[this->_signalIdx] = 2;
+            this->_signalIdx++;
+            this->_intervalDuration.start();
+        }
 
         this->_isPreviousPushed = signal; // 過去の押下状態を保存
 
