@@ -8,7 +8,7 @@
 #define MORSE_KEY_NONE 0            // 返却値なし
 #define MORSE_MAX_LENGTH 8          // モールス信号の最大長
 #define MORSE_DAH_DURATION_MS 150   // モールス信号ダッシュ長
-#define MORSE_END_DURATION_MS 1000  // モールス信号終了判定時間
+#define MORSE_END_DURATION_MS 500  // モールス信号終了判定時間
 #define MORSE_INTERVAL_MS     150   // ボタン押下、判定後待機時間
 
 // モールス信号構造体
