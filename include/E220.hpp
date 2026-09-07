@@ -7,6 +7,11 @@
 #include <Arduino.h>
 
 //SECTION - 列挙型
+//ANCHOR - モード
+enum class E220_Mode : uint8_t {
+    NORMAL = 0, // ノーマルモード
+    CONFIG = 3  // コンフィグモード
+};
 //ANCHOR - コマンド
 enum class E220_Command : uint8_t {
     WRITE_PERM = 0xC0, // 永続書き込み (EEPROM保存)
@@ -79,8 +84,8 @@ enum class E220_TxPower_22S : uint8_t {
 };
 //ANCHOR - 送信モード
 enum class E220_SendMode : uint8_t {
-    MODE_DEFAULT     = 0x00,
-    MODE_TRANSPARENT = 0x20
+    MODE_TRANSPARENT = 0x00,
+    MODE_FIXED       = 0x40
 };
 //ANCHOR - WORサイクル
 enum class E220_WORCycle : uint8_t {
@@ -165,7 +170,7 @@ private:
     }
 
     /**
-     * @brief AUXピンがLOWになるまで待機する
+     * @brief AUXピンが待機状態になるまで待機する
      * @note AUXピンが接続されていない場合は20ms待機する
      * @note AUXピンが接続されている場合は、AUXピンがHIGHになるまで待機する
      */
@@ -182,23 +187,46 @@ private:
      * @param mode 設定するモード (0:ノーマルモード, 3:コンフィグモード)
      * @note M0ピンとM1ピンが接続されていない場合は何もしない
      */
-    void _setMode(uint8_t mode) const {
+    void _setMode(E220_Mode mode) const {
         _waitAUX();
-        delay(10);
         if (_m0Pin >= 0 && _m1Pin >= 0) {
             switch (mode) {
-                case 0: // Normal Mode
+                case E220_Mode::NORMAL:
                     digitalWrite(_m0Pin, LOW);
                     digitalWrite(_m1Pin, LOW);
                     break;
-                case 3: // Configuration Mode
+                case E220_Mode::CONFIG:
                     digitalWrite(_m0Pin, HIGH);
                     digitalWrite(_m1Pin, HIGH);
                     break;
             }
         }
-        delay(10);
         _waitAUX();
+    }
+    /**
+     * @brief シリアルバッファをクリアする
+     */
+    void _clearSerialBuffer() const {
+        while (_serial->available()) _serial->read();
+    }
+    /**
+     * @brief モジュールからの応答を読み取る
+     * @param buffer 応答を格納するバッファ
+     * @param length バッファの長さ
+     * @return 読み取りが成功した場合はtrue、失敗した場合はfalse
+     */
+    bool _readResponse(E220_ConfigPacket* config) const {
+        if (!_serial) return false;
+
+        unsigned long start = millis();
+        while (millis() - start < 1000) {
+            if (_serial->available() >= sizeof(config->bytes)) {
+                _serial->readBytes(config->bytes, sizeof(config->bytes));
+                if (config->format.command == E220_Command::ACK)
+                    return true;
+            }
+        }
+        return false;
     }
 
 public:
@@ -228,9 +256,132 @@ public:
         if (_m1Pin >= 0) pinMode(_m1Pin, OUTPUT);
         if (_auxPin >= 0) pinMode(_auxPin, INPUT);
 
-        _setMode(0); // デフォルトはノーマルモード
-    }
+        _setMode(E220_Mode::NORMAL); // デフォルトはノーマルモード
 
+        this->_clearSerialBuffer(); // シリアルバッファをクリアする
+        this->readConfig(); // モジュールの設定を読み込む
+    }
+    /**
+     * @brief データを送信する
+     * @param data 送信するデータ
+     * @param length 送信するデータの長さ
+     * @return 指定した長さをすべて送信できた場合はtrue
+     * @note E220は通常モードで受信したUARTデータをそのまま送信する
+     * @note 送信モードが固定モードの場合は、透過モードで送信しない。
+     */
+    bool send(const uint8_t* data, size_t length) {
+        if (!_serial || (!data && length > 0)) return false;
+        if (length == 0) return true;
+        _setMode(E220_Mode::NORMAL);
+
+        if(this->getSendMode() != E220_SendMode::MODE_TRANSPARENT) return false; // 送信モードが固定モードの場合は、透過モードで送信しない
+
+        const size_t written = _serial->write(data, length);
+        _serial->flush();
+        _waitAUX();
+        return written == length;
+    }
+    /**
+     * @brief データを送信する (アドレスとチャンネルを指定)
+     * @param data 送信するデータ
+     * @param length 送信するデータの長さ
+     * @param targetAddress 送信先アドレス (0x0000～0xFFFF)
+     * @param targetChannel 送信先チャンネル (0～37)
+     * @note 送信モードが透過モードの場合は、アドレスとチャンネルを指定して送信できない
+     */
+    bool send(const uint8_t* data, size_t length, uint16_t targetAddress, uint8_t targetChannel) {
+        if (!_serial || (!data && length > 0)) return false;
+        if (length == 0) return true;
+        _setMode(E220_Mode::NORMAL);
+
+        if(this->getSendMode() == E220_SendMode::MODE_TRANSPARENT) return false; // 送信モードが透過モードの場合は、アドレスとチャンネルを指定して送信できない
+
+        const uint8_t header_size = 3;
+        uint8_t header[header_size] = {
+            static_cast<uint8_t>(targetAddress >> 8), // 高位アドレス
+            static_cast<uint8_t>(targetAddress & 0xFF), // 低位アドレス
+            targetChannel // チャンネル
+        };
+        _serial->write(header, sizeof(header)); // ヘッダ書き込み
+        
+        const size_t written = _serial->write(data, length);
+        _serial->flush();
+        _waitAUX();
+        return written == length;
+    }
+    /**
+     * @brief null終端文字列を送信する
+     * @param data 送信する文字列
+     * @return 文字列をすべて送信できた場合はtrue
+     * @note 送信モードが固定モードの場合は、透過モードで送信しない
+     */
+    bool send(const char* data) {
+        if (!data) return false;
+        return send(reinterpret_cast<const uint8_t*>(data), strlen(data));
+    }
+    /**
+     * @brief null終端文字列を送信する (アドレスとチャンネルを指定)
+     * @param data 送信する文字列
+     * @param targetAddress 送信先アドレス (0x0000～0xFFFF)
+     * @param targetChannel 送信先チャンネル (0～37)
+     * @return 文字列をすべて送信できた場合はtrue
+     * @note 送信モードが透過モードの場合は、アドレスとチャンネルを指定して送信できない
+     */
+    bool send(const char* data, uint16_t targetAddress, uint8_t targetChannel) {
+        if (!data) return false;
+        return send(reinterpret_cast<const uint8_t*>(data), strlen(data), targetAddress, targetChannel);
+    }
+    /**
+     * @brief 受信バッファにあるデータ量を取得する
+     * @return 受信可能なバイト数
+     */
+    int available() const {
+        return _serial ? _serial->available() : 0;
+    }
+    /**
+     * @brief 受信バッファから1バイト読み取る
+     * @return 受信したバイト、データがない場合は-1
+     */
+    int read() {
+        return _serial ? _serial->read() : -1;
+    }
+    /**
+     * @brief 受信バッファから文字列を読み取る
+     * @return 受信した文字列
+     */
+    String receiveString() {
+        String result = "";
+        while (available()) {
+            int value = read();
+            if (value < 0) break;
+            result += static_cast<char>(value);
+        }
+        return result;
+    }
+    /**
+     * @brief 受信データを読み取る
+     * @param buffer 受信データを格納するバッファ
+     * @param length 最大読み取りバイト数
+     * @param timeout 読み取りを待つ最大時間 (ms)。0の場合は非ブロッキング
+     * @return 読み取ったバイト数
+     */
+    size_t receive(uint8_t* buffer, size_t length, uint32_t timeout = 0) {
+        if (!_serial || !buffer || length == 0) return 0;
+
+        const unsigned long start = millis();
+        size_t received = 0;
+        while (received < length) {
+            if (_serial->available()) {
+                const int value = _serial->read();
+                if (value >= 0) buffer[received++] = static_cast<uint8_t>(value);
+                continue;
+            }
+
+            if (timeout == 0 || millis() - start >= timeout) break;
+            delay(1);
+        }
+        return received;
+    }
     /**
      * @brief モジュールに設定を書き込む
      * @param saveType 書き込みタイプ (WRITE_PERM: 永続書き込み, WRITE_TEMP: 一時書き込み)
@@ -240,37 +391,24 @@ public:
     bool writeConfig(E220_Command saveType = E220_Command::WRITE_PERM) {
         if (!_serial) return false;
 
-        _setMode(3); // コンフィグモードへ移行
+        _setMode(E220_Mode::CONFIG); // コンフィグモードへ移行
         
         _config.format.command = saveType;
         _config.format.registerAddress = 0x00;
         _config.format.length = 0x08;
 
-        // シリアルバッファクリア
-        while (_serial->available()) _serial->read();
+        this->_clearSerialBuffer(); // コマンド送信前にシリアルバッファをクリアする
 
         // 11バイト送信
         _serial->write(_config.bytes, sizeof(_config.bytes));
         _serial->flush();
 
         // 返答待ち (ACKチェック)
-        bool success = false;
-        unsigned long start = millis();
-        while (millis() - start < 1000) {
-            if (_serial->available() >= sizeof(_config.bytes)) {
-                uint8_t resBuf[11];
-                _serial->readBytes(resBuf, sizeof(resBuf));
-                if (resBuf[0] == static_cast<uint8_t>(E220_Command::ACK)) {
-                    success = true;
-                }
-                break;
-            }
-        }
+        bool success = this->_readResponse(&_config);
 
-        _setMode(0); // ノーマルモードに戻す
+        _setMode(E220_Mode::NORMAL); // ノーマルモードに戻す
         return success;
     }
-
     /**
      * @brief モジュールから設定を読み込む
      * @return 読み込みが成功した場合はtrue、失敗した場合はfalse
@@ -279,7 +417,7 @@ public:
     bool readConfig() {
         if (!_serial) return false;
 
-        _setMode(3); // コンフィグモードへ移行
+        _setMode(E220_Mode::CONFIG); // コンフィグモードへ移行
 
         uint8_t readCmd[3] = {
             static_cast<uint8_t>(E220_Command::READ),
@@ -287,28 +425,20 @@ public:
             0x08  // 読み出し長
         };
 
-        // シリアルバッファクリア
-        while (_serial->available()) _serial->read();
+        this->_clearSerialBuffer(); // コマンド送信前にシリアルバッファをクリアする
 
         _serial->write(readCmd, sizeof(readCmd));
         _serial->flush();
 
-        bool success = false;
-        unsigned long start = millis();
-        while (millis() - start < 1000) {
-            if (_serial->available() >= sizeof(_config.bytes)) {
-                _serial->readBytes(_config.bytes, sizeof(_config.bytes));
-                if (_config.format.command == E220_Command::ACK) {
-                    success = true;
-                }
-                break;
-            }
-        }
+        bool success = this->_readResponse(&_config);
+        _setMode(E220_Mode::NORMAL); // ノーマルモードに戻す
 
-        _setMode(0); // ノーマルモードに戻す
+        for(size_t i = 0; i < sizeof(_config.bytes); ++i) {
+            Serial.printf("Config[%zu]: %02X\n", i, _config.bytes[i]);
+        }
+        
         return success;
     }
-
 
     //SECTION Setters
     /**
@@ -356,7 +486,7 @@ public:
      * @return *this
      */
     E220& setAirDataRate(E220_AirDataRate rate) {
-        this->_config.format.REG0 &= 0xE0;
+        this->_config.format.REG0 &= 0xE0; // 
         this->_config.format.REG0 |= static_cast<uint8_t>(rate);
         return *this;
     }
@@ -422,9 +552,11 @@ public:
      * @param mode 設定する送信モード
      * @return *this
      */
-    E220& setSendMode(E220_SendMode mode) {
-        this->_config.format.REG3 &= 0x9F;
+    E220& setSendMode(E220_SendMode mode)
+    {
+        this->_config.format.REG3 &= 0xBF; // bit6をクリア
         this->_config.format.REG3 |= static_cast<uint8_t>(mode);
+
         return *this;
     }
     /**
@@ -507,8 +639,9 @@ public:
      * @brief 送信モードを取得する
      * @return 設定されている送信モード
      */
-    E220_SendMode getSendMode() const {
-        return static_cast<E220_SendMode>(_config.format.REG3 & 0x60);
+    E220_SendMode getSendMode() const
+    {
+        return static_cast<E220_SendMode>(this->_config.format.REG3 & 0x40);
     }
     /**
      * @brief WORサイクルを取得する

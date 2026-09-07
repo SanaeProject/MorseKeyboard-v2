@@ -7,11 +7,11 @@
 #define TX_PIN   2
 #define RX_PIN   21
 #define AUX_PIN  22
+#define CHANNEL  25
 
 E220 e220;
 
 void setup() {
-
     // PCとのUSBシリアル
     Serial.begin(9600);
     delay(5000);
@@ -35,7 +35,7 @@ void setup() {
         .setUARTSerialPortRate(E220_UARTSerialPortRate::RATE_9600)
         .setAirDataRate(E220_AirDataRate::BW125_1758BPS)
         .setTxPower(E220_TxPower_22S::POWER_13DBM)
-        .setFrequencyChannel(3)
+        .setFrequencyChannel(CHANNEL)
         .setSendMode(E220_SendMode::MODE_FIXED)
         .writeConfig();
 
@@ -43,12 +43,11 @@ void setup() {
     e220.readConfig();
 
     Serial.printf(
-        "E220 Config: UART=%02X, AirDataRate=%02X, TxPower=%02X, FreqChannel=%02X, SendMode=%02X\n",
+        "E220 Config: UART=%02X, AirDataRate=%02X, TxPower=%02X, FreqChannel=%02X\n",
         static_cast<uint8_t>(e220.getUARTSerialPortRate()),
         static_cast<uint8_t>(e220.getAirDataRate()),
         static_cast<uint8_t>(e220.getTxPower()),
-        static_cast<uint8_t>(e220.getFrequencyChannel()),
-        static_cast<uint8_t>(e220.getSendMode())
+        static_cast<uint8_t>(e220.getFrequencyChannel())
     );
 
     Serial.println("E220 initialized");
@@ -66,9 +65,7 @@ void loop() {
         digitalWrite(LED_BUILTIN, HIGH);
 
         while (e220.available() > 0) {
-
             int data = e220.read();
-
             if (data >= 0) {
                 Serial.write(static_cast<uint8_t>(data));
             }
