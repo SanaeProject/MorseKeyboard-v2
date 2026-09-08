@@ -36,19 +36,12 @@ void setup() {
         .setAirDataRate(E220_AirDataRate::BW125_1758BPS)
         .setTxPower(E220_TxPower_22S::POWER_13DBM)
         .setFrequencyChannel(CHANNEL)
-        .setSendMode(E220_SendMode::MODE_FIXED)
+        .setSendMode(E220_SendMode::MODE_TRANSPARENT)
         .writeConfig();
 
     // モジュールの設定を読み込む
+    Serial.println("----E220 Config written.----");
     e220.readConfig();
-
-    Serial.printf(
-        "E220 Config: UART=%02X, AirDataRate=%02X, TxPower=%02X, FreqChannel=%02X\n",
-        static_cast<uint8_t>(e220.getUARTSerialPortRate()),
-        static_cast<uint8_t>(e220.getAirDataRate()),
-        static_cast<uint8_t>(e220.getTxPower()),
-        static_cast<uint8_t>(e220.getFrequencyChannel())
-    );
 
     Serial.println("E220 initialized");
     Serial.println("Waiting for data...");

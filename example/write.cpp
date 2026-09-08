@@ -30,13 +30,6 @@ void setup() {
         AUX_PIN
     );
 
-    // config情報を読み込む
-    Serial.printf("E220 Config: AirDataRate=%02X, TxPower=%02X, FreqChannel=%02X\n",
-        static_cast<uint8_t>(e220.getAirDataRate()),
-        static_cast<uint8_t>(e220.getTxPower()),
-        static_cast<uint8_t>(e220.getFrequencyChannel())
-    );
-
     // 無線設定
     e220.setCommand(E220_Command::WRITE_TEMP)
         .setUARTSerialPortRate(E220_UARTSerialPortRate::RATE_9600)
@@ -46,12 +39,8 @@ void setup() {
         .setSendMode(E220_SendMode::MODE_FIXED)
         .writeConfig();
 
+    Serial.println("----E220 Config written.----");
     e220.readConfig(); // モジュールの設定を読み込む
-    Serial.printf("E220 Config: AirDataRate=%02X, TxPower=%02X, FreqChannel=%02X\n",
-        static_cast<uint8_t>(e220.getAirDataRate()),
-        static_cast<uint8_t>(e220.getTxPower()),
-        static_cast<uint8_t>(e220.getFrequencyChannel())
-    );
 
     Serial.println("E220 initialized");
     Serial.println("Start transmitting...");

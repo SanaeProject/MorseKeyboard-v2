@@ -19,16 +19,18 @@ enum class E220_Command : uint8_t {
     ACK        = 0xC1, // E220からの応答ヘッダー
     WRITE_TEMP = 0xC2  // 一時書き込み (RAM保存)
 };
+
+//SECTION - REG0
 //ANCHOR - UARTシリアル通信速度
 enum class E220_UARTSerialPortRate : uint8_t {
-    RATE_1200   = 0x00, // 0000 1200bps
-    RATE_2400   = 0x20, // 0010 2400bps
-    RATE_4800   = 0x40, // 0100 4800bps
-    RATE_9600   = 0x60, // 0110 9600bps
-    RATE_19200  = 0x08, // 1000 19200bps
-    RATE_38400  = 0x0a, // 1010 38400bps
-    RATE_57600  = 0x0c, // 1100 57600bps
-    RATE_115200 = 0x0e, // 1110 115200bps
+    RATE_1200   = 0x00, // 000 1200bps
+    RATE_2400   = 0x20, // 001 2400bps
+    RATE_4800   = 0x40, // 010 4800bps
+    RATE_9600   = 0x60, // 011 9600bps
+    RATE_19200  = 0x80, // 100 19200bps
+    RATE_38400  = 0xa0, // 101 38400bps
+    RATE_57600  = 0xc0, // 110 57600bps
+    RATE_115200 = 0xe0, // 111 115200bps
 };
 //ANCHOR - 空中通信速度
 enum class E220_AirDataRate : uint8_t {
@@ -56,12 +58,15 @@ enum class E220_AirDataRate : uint8_t {
     BW500_3906BPS  = 0x16, // 10110 -> SF10, 3.906kbps
     BW500_2148BPS  = 0x1A  // 11010 -> SF11, 2.148kbps
 };
+//!SECTION
+
+//SECTION - REG1
 //ANCHOR - ペイロード長
 enum class E220_PayloadLength : uint8_t {
-    LENGTH_200 = 0x00, // 0000 200byte
-    LENGTH_128 = 0x04, // 0100 128byte
-    LENGTH_64  = 0x08, // 1000 64byte
-    LENGTH_32  = 0x0c, // 1100 32byte
+    LENGTH_200 = 0x00, // 00 200byte
+    LENGTH_128 = 0x40, // 01 128byte
+    LENGTH_64  = 0x80, // 10 64byte
+    LENGTH_32  = 0xC0, // 11 32byte
 };
 //ANCHOR - 送信出力
 enum class E220_TxPower_22S : uint8_t {
@@ -82,6 +87,9 @@ enum class E220_TxPower_22S : uint8_t {
     POWER_11DBM   = 0x0E,
     POWER_12DBM   = 0x0F
 };
+//!SECTION
+
+//SECTION - REG3
 //ANCHOR - 送信モード
 enum class E220_SendMode : uint8_t {
     MODE_TRANSPARENT = 0x00,
@@ -96,6 +104,7 @@ enum class E220_WORCycle : uint8_t {
     CYCLE_2500MS = 0x04,
     CYCLE_3000MS = 0x05,
 };
+//!SECTION
 //!SECTION
 
 //ANCHOR - 設定フォーマット
@@ -297,17 +306,21 @@ public:
         if(this->getSendMode() == E220_SendMode::MODE_TRANSPARENT) return false; // 送信モードが透過モードの場合は、アドレスとチャンネルを指定して送信できない
 
         const uint8_t header_size = 3;
-        uint8_t header[header_size] = {
-            static_cast<uint8_t>(targetAddress >> 8), // 高位アドレス
-            static_cast<uint8_t>(targetAddress & 0xFF), // 低位アドレス
-            targetChannel // チャンネル
-        };
-        _serial->write(header, sizeof(header)); // ヘッダ書き込み
-        
-        const size_t written = _serial->write(data, length);
+        const size_t packetLength = header_size + length;
+
+        uint8_t* packet = new uint8_t[packetLength];
+        packet[0] = static_cast<uint8_t>(targetAddress >> 8);   // 高位アドレス
+        packet[1] = static_cast<uint8_t>(targetAddress & 0xFF); // 低位アドレス
+        packet[2] = targetChannel;                               // チャンネル
+        memcpy(packet + header_size, data, length);
+
+        const size_t written = _serial->write(packet, packetLength);
         _serial->flush();
         _waitAUX();
-        return written == length;
+
+        delete[] packet;
+
+        return written == packetLength;
     }
     /**
      * @brief null終端文字列を送信する
@@ -507,7 +520,7 @@ public:
      */
     E220& setRSSINoiseEnable(bool enable) {
         if(enable)
-            this->_config.format.REG1 |= 0x10;
+            this->_config.format.REG1 |= 0x20;
         else
             this->_config.format.REG1 &= 0xDF;
         return *this;
@@ -612,7 +625,7 @@ public:
      * @return 有効な場合はtrue、無効な場合はfalse
      */
     bool getRSSINoiseEnable() const {
-        return (_config.format.REG1 & 0x10) != 0;
+        return (_config.format.REG1 & 0x20) != 0;
     }
     /**
      * @brief 送信出力を取得する
