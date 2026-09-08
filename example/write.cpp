@@ -36,7 +36,7 @@ void setup() {
         .setAirDataRate(E220_AirDataRate::BW125_1758BPS)
         .setTxPower(E220_TxPower_22S::POWER_13DBM)
         .setFrequencyChannel(CHANNEL)
-        .setSendMode(E220_SendMode::MODE_FIXED)
+        .setSendMode(E220_SendMode::MODE_TRANSPARENT)
         .writeConfig();
 
     Serial.println("----E220 Config written.----");
@@ -52,7 +52,7 @@ void loop() {
     digitalWrite(LED_BUILTIN, HIGH);
     Serial.println("TX: Hello, World!");
 
-    if (e220.send("Hello, World!", 0, CHANNEL)) {
+    if (e220.send("Hello, World!")) {
         Serial.println("TX: success");
     } else {
         Serial.println("TX: failed");
