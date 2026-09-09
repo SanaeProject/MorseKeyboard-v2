@@ -6,6 +6,11 @@
 
 #include <Arduino.h>
 
+#ifndef DEBUG_MODE
+    #define DEBUG_MODE false
+#endif
+#define DEBUG(CODE) if (DEBUG_MODE) { CODE; }
+
 //SECTION - 列挙型
 //ANCHOR - モード
 enum class E220_Mode : uint8_t {
@@ -180,15 +185,24 @@ private:
 
     /**
      * @brief AUXピンが待機状態になるまで待機する
+     * @return AUXピンが待機状態になった場合はtrue、タイムアウトした場合はfalse
      * @note AUXピンが接続されていない場合は20ms待機する
      * @note AUXピンが接続されている場合は、AUXピンがHIGHになるまで待機する
      */
-    void _waitAUX() const {
+    bool _waitAUX() const {
+        const uint32_t start = millis();
         if (_auxPin >= 0) {
-            while (digitalRead(_auxPin) == LOW) delay(1);
+            while (digitalRead(_auxPin) == LOW) {
+                if (millis() - start > this->timeout) {
+                    DEBUG(Serial.println("E220 Error: Timeout waiting for AUX pin to go HIGH"));
+                    return false;
+                }
+                delay(1);
+            }
         } else {
             delay(20);
         }
+        return true;
     }
 
     /**
@@ -196,8 +210,8 @@ private:
      * @param mode 設定するモード (0:ノーマルモード, 3:コンフィグモード)
      * @note M0ピンとM1ピンが接続されていない場合は何もしない
      */
-    void _setMode(E220_Mode mode) const {
-        _waitAUX();
+    bool _setMode(E220_Mode mode) const {
+        if (!_waitAUX()) return false;
         if (_m0Pin >= 0 && _m1Pin >= 0) {
             switch (mode) {
                 case E220_Mode::NORMAL:
@@ -210,7 +224,9 @@ private:
                     break;
             }
         }
-        _waitAUX();
+        bool result = _waitAUX();
+        delay(50); // モード切替後にAUXが安定するまで少し待つ
+        return result;
     }
     /**
      * @brief シリアルバッファをクリアする
@@ -227,18 +243,25 @@ private:
     bool _readResponse(E220_ConfigPacket* config) const {
         if (!_serial) return false;
 
+        memset(config, 0, sizeof(config->bytes));
+
         unsigned long start = millis();
-        while (millis() - start < 1000) {
-            if (_serial->available() >= sizeof(config->bytes)) {
+        while (millis() - start < this->timeout) {
+            if (_serial->available() >= sizeof(config->bytes)) { // 11バイト揃うのを待つ
                 _serial->readBytes(config->bytes, sizeof(config->bytes));
                 if (config->format.command == E220_Command::ACK)
                     return true;
             }
         }
+
+        DEBUG(Serial.println("E220 Error: Timeout waiting for response"));
         return false;
     }
 
 public:
+    uint32_t timeout = 1000; // 読み込みのタイムアウト時間 (ms)
+
+
     E220() : _serial(nullptr), _m0Pin(-1), _m1Pin(-1), _auxPin(-1) {
         memset(_config.bytes, 0, sizeof(_config.bytes));
         _config.format.command = E220_Command::WRITE_PERM;
@@ -255,7 +278,7 @@ public:
      * @note m0Pinとm1Pinが接続されていない場合は、モジュールの動作モードを変更できない
      * @note auxPinが接続されていない場合は、モジュールの応答を待つことができないため、writeConfig()やreadConfig()の成功判定が正確でなくなる可能性がある
      */
-    void begin(HardwareSerial& serial, int8_t m0Pin = -1, int8_t m1Pin = -1, int8_t auxPin = -1) {
+    bool begin(HardwareSerial& serial, int8_t m0Pin = -1, int8_t m1Pin = -1, int8_t auxPin = -1) {
         _serial = &serial;
         _m0Pin = m0Pin;
         _m1Pin = m1Pin;
@@ -263,12 +286,15 @@ public:
 
         if (_m0Pin >= 0) pinMode(_m0Pin, OUTPUT);
         if (_m1Pin >= 0) pinMode(_m1Pin, OUTPUT);
-        if (_auxPin >= 0) pinMode(_auxPin, INPUT);
+        if (_auxPin >= 0) pinMode(_auxPin, INPUT_PULLUP);
 
-        _setMode(E220_Mode::NORMAL); // デフォルトはノーマルモード
+        if (!_setMode(E220_Mode::NORMAL)) {
+            DEBUG(Serial.println("E220 Error: Failed to set normal mode"));
+            return false;
+        } // デフォルトはノーマルモード
 
         this->_clearSerialBuffer(); // シリアルバッファをクリアする
-        this->readConfig(); // モジュールの設定を読み込む
+        return this->readConfig(); // モジュールの設定を読み込む
     }
     /**
      * @brief データを送信する
@@ -281,7 +307,7 @@ public:
     bool send(const uint8_t* data, size_t length) {
         if (!_serial || (!data && length > 0)) return false;
         if (length == 0) return true;
-        _setMode(E220_Mode::NORMAL);
+        if (!_setMode(E220_Mode::NORMAL)) return false;
 
         if(this->getSendMode() != E220_SendMode::MODE_TRANSPARENT) return false; // 送信モードが固定モードの場合は、透過モードで送信しない
 
@@ -301,7 +327,7 @@ public:
     bool send(const uint8_t* data, size_t length, uint16_t targetAddress, uint8_t targetChannel) {
         if (!_serial || (!data && length > 0)) return false;
         if (length == 0) return true;
-        _setMode(E220_Mode::NORMAL);
+        if (!_setMode(E220_Mode::NORMAL)) return false;
 
         if(this->getSendMode() == E220_SendMode::MODE_TRANSPARENT) return false; // 送信モードが透過モードの場合は、アドレスとチャンネルを指定して送信できない
 
@@ -316,7 +342,7 @@ public:
 
         const size_t written = _serial->write(packet, packetLength);
         _serial->flush();
-        _waitAUX();
+        if (!_waitAUX()) return false;
 
         delete[] packet;
 
@@ -402,10 +428,14 @@ public:
      * @note AUXピンが接続されていない場合は、書き込みが成功したかどうかの判定が正確でなくなる可能性がある
      */
     bool writeConfig(E220_Command saveType = E220_Command::WRITE_PERM) {
-        if (!_serial) return false;
-
-        _setMode(E220_Mode::CONFIG); // コンフィグモードへ移行
+        if (!_serial)
+            return false;
         
+        if (!_setMode(E220_Mode::CONFIG)) {
+            DEBUG(Serial.println("Failed to set config mode"));
+            return false;
+        } // コンフィグモードへ移行
+
         _config.format.command = saveType;
         _config.format.registerAddress = 0x00;
         _config.format.length = 0x08;
@@ -415,6 +445,9 @@ public:
         // 11バイト送信
         _serial->write(_config.bytes, sizeof(_config.bytes));
         _serial->flush();
+
+        // 書込み完了まち
+        this->_waitAUX();
 
         // 返答待ち (ACKチェック)
         bool success = this->_readResponse(&_config);
@@ -427,30 +460,19 @@ public:
      * @return 読み込みが成功した場合はtrue、失敗した場合はfalse
      * @note AUXピンが接続されていない場合は、読み込みが成功したかどうかの判定が正確でなくなる可能性がある
      */
-    bool readConfig() {
-        if (!_serial) return false;
+    bool readConfig()
+    {
+        if (!_setMode(E220_Mode::CONFIG)) {
+            Serial.println("Failed to set config mode");
+            return false;
+        }
+        _clearSerialBuffer();
 
-        _setMode(E220_Mode::CONFIG); // コンフィグモードへ移行
-
-        uint8_t readCmd[3] = {
-            static_cast<uint8_t>(E220_Command::READ),
-            0x00, // 開始アドレス
-            0x08  // 読み出し長
-        };
-
-        this->_clearSerialBuffer(); // コマンド送信前にシリアルバッファをクリアする
-
-        _serial->write(readCmd, sizeof(readCmd));
+        uint8_t cmd[] = {static_cast<uint8_t>(E220_Command::READ), 0x00, 0x08};
+        _serial->write(cmd, sizeof(cmd));
         _serial->flush();
 
-        bool success = this->_readResponse(&_config);
-        _setMode(E220_Mode::NORMAL); // ノーマルモードに戻す
-
-        for(size_t i = 0; i < sizeof(_config.bytes); ++i) {
-            Serial.printf("Config[%zu]: %02X\n", i, _config.bytes[i]);
-        }
-        
-        return success;
+        return _readResponse(&_config);
     }
 
     //SECTION Setters
