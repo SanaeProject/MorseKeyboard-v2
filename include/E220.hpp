@@ -693,6 +693,21 @@ public:
         return _config.bytes;
     }
     //!SECTION
+
+    void printConfig() const {
+        Serial.println("E220 Configuration:");
+        Serial.print("  Device Address: 0x"); Serial.println(getDeviceAddress(), HEX);
+        Serial.print("  Crypt Key: 0x"); Serial.println(getCryptKey(), HEX);
+        Serial.print("  UART Serial Port Rate: "); Serial.println(static_cast<uint8_t>(getUARTSerialPortRate()));
+        Serial.print("  Air Data Rate: "); Serial.println(static_cast<uint8_t>(getAirDataRate()));
+        Serial.print("  Payload Length: "); Serial.println(static_cast<uint8_t>(getPayloadLength()));
+        Serial.print("  RSSI Noise Enable: "); Serial.println(getRSSINoiseEnable() ? "Enabled" : "Disabled");
+        Serial.print("  Tx Power: "); Serial.println(static_cast<uint8_t>(getTxPower()));
+        Serial.print("  Frequency Channel: "); Serial.println(getFrequencyChannel());
+        Serial.print("  RSSI Byte Enable: "); Serial.println(getRSSIByteEnable() ? "Enabled" : "Disabled");
+        Serial.print("  Send Mode: "); Serial.println(static_cast<uint8_t>(getSendMode()));
+        Serial.print("  WOR Cycle: "); Serial.println(static_cast<uint8_t>(getWORCycle()));
+    }
 };
 
 #endif // E220_HPP
