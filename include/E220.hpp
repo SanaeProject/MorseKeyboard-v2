@@ -452,7 +452,7 @@ public:
         // 返答待ち (ACKチェック)
         bool success = this->_readResponse(&_config);
 
-        _setMode(E220_Mode::NORMAL); // ノーマルモードに戻す
+        success = success && this->_setMode(E220_Mode::NORMAL); // ノーマルモードに戻す
         return success;
     }
     /**
