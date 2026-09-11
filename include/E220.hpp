@@ -286,7 +286,7 @@ public:
 
         if (_m0Pin >= 0) pinMode(_m0Pin, OUTPUT);
         if (_m1Pin >= 0) pinMode(_m1Pin, OUTPUT);
-        if (_auxPin >= 0) pinMode(_auxPin, INPUT_PULLUP);
+        if (_auxPin >= 0) pinMode(_auxPin, INPUT);
 
         if (!_setMode(E220_Mode::NORMAL)) {
             DEBUG(Serial.println("E220 Error: Failed to set normal mode"));
