@@ -6,11 +6,6 @@
 
 #include <Arduino.h>
 
-#ifndef DEBUG_MODE
-    #define DEBUG_MODE false
-#endif
-#define DEBUG(CODE) if (DEBUG_MODE) { CODE; }
-
 //SECTION - 列挙型
 //ANCHOR - モード
 enum class E220_Mode : uint8_t {
@@ -112,6 +107,15 @@ enum class E220_WORCycle : uint8_t {
 //!SECTION
 //!SECTION
 
+// ANCHOR - ログレベル
+enum class E220_LogLevel : uint8_t {
+    NONE  = 0,
+    ERROR = 1,
+    WARN  = 2,
+    INFO  = 3,
+    DEBUG = 4
+};
+
 //ANCHOR - 設定フォーマット
 /**
  * @brief E220の設定フォーマット
@@ -137,11 +141,14 @@ union E220_ConfigPacket {
     E220_ConfigFormat format;
 };
 
-//ANCHOR - E220クラス
-class E220 {
+//ANCHOR - E220_Configクラス
+class E220_Config {
 private:
     E220_ConfigPacket _config;
-    HardwareSerial* _serial;
+    Stream* _serial;
+    Stream* _debug_serial;
+
+    E220_LogLevel _logLevel = E220_LogLevel::NONE;
 
     int8_t _m0Pin;
     int8_t _m1Pin;
@@ -191,15 +198,15 @@ private:
      */
     bool _waitAUX() const {
         const uint32_t start = millis();
-        if (_auxPin >= 0) {
-            while (digitalRead(_auxPin) == LOW) {
+        if(_auxPin >= 0) {
+            while(digitalRead(_auxPin) == LOW){
                 if (millis() - start > this->timeout) {
-                    DEBUG(Serial.println("E220 Error: Timeout waiting for AUX pin to go HIGH"));
+                    _writeLog("E220 Error: Timeout waiting for AUX pin to go HIGH", E220_LogLevel::ERROR);
                     return false;
                 }
                 delay(1);
             }
-        } else {
+        }else{
             delay(20);
         }
         return true;
@@ -211,8 +218,11 @@ private:
      * @note M0ピンとM1ピンが接続されていない場合は何もしない
      */
     bool _setMode(E220_Mode mode) const {
-        if (!_waitAUX()) return false;
-        if (_m0Pin >= 0 && _m1Pin >= 0) {
+        if(!_waitAUX()){
+            _writeLog("E220 Error: Timeout waiting for AUX pin to go HIGH at first.", E220_LogLevel::ERROR);
+            return false;
+        }
+        if(_m0Pin >= 0 && _m1Pin >= 0){
             switch (mode) {
                 case E220_Mode::NORMAL:
                     digitalWrite(_m0Pin, LOW);
@@ -225,6 +235,8 @@ private:
             }
         }
         bool result = _waitAUX();
+        if (!result) _writeLog("E220 Error: Timeout waiting for AUX pin to go HIGH after mode change", E220_LogLevel::ERROR);
+        
         delay(50); // モード切替後にAUXが安定するまで少し待つ
         return result;
     }
@@ -254,15 +266,18 @@ private:
             }
         }
 
-        DEBUG(Serial.println("E220 Error: Timeout waiting for response"));
+        _writeLog("E220 Error: Timeout waiting for response from module", E220_LogLevel::ERROR);
         return false;
+    }
+    void _writeLog(const String& message, E220_LogLevel level) const {
+        if (_debug_serial && _logLevel >= level)
+            _debug_serial->println(message);
     }
 
 public:
     uint32_t timeout = 1000; // 読み込みのタイムアウト時間 (ms)
 
-
-    E220() : _serial(nullptr), _m0Pin(-1), _m1Pin(-1), _auxPin(-1) {
+    E220_Config() : _serial(nullptr), _m0Pin(-1), _m1Pin(-1), _auxPin(-1) {
         memset(_config.bytes, 0, sizeof(_config.bytes));
         _config.format.command = E220_Command::WRITE_PERM;
         _config.format.registerAddress = 0x00;
@@ -271,30 +286,33 @@ public:
 
     /**
      * @brief E220モジュールの初期化
-     * @param serial 使用するHardwareSerialオブジェクト
+     * @param serial 使用するStreamオブジェクト(HardwareSerialやSoftwareSerialなど)
      * @param m0Pin M0ピンのGPIO番号 (省略可)
      * @param m1Pin M1ピンのGPIO番号 (省略可)
      * @param auxPin AUXピンのGPIO番号 (省略可)
+     * @param debugSerial デバッグ情報を出力するStreamオブジェクト (省略可)
      * @note m0Pinとm1Pinが接続されていない場合は、モジュールの動作モードを変更できない
      * @note auxPinが接続されていない場合は、モジュールの応答を待つことができないため、writeConfig()やreadConfig()の成功判定が正確でなくなる可能性がある
+     * @note debugSerialが指定された場合は、デバッグ情報を出力する
      */
-    bool begin(HardwareSerial& serial, int8_t m0Pin = -1, int8_t m1Pin = -1, int8_t auxPin = -1) {
-        _serial = &serial;
-        _m0Pin = m0Pin;
-        _m1Pin = m1Pin;
+    bool begin(Stream* serial, int8_t m0Pin = -1, int8_t m1Pin = -1, int8_t auxPin = -1, Stream* debugSerial = nullptr) {
+        _serial = serial;
+        _m0Pin  = m0Pin;
+        _m1Pin  = m1Pin;
         _auxPin = auxPin;
+        _debug_serial = debugSerial;
 
         if (_m0Pin >= 0) pinMode(_m0Pin, OUTPUT);
         if (_m1Pin >= 0) pinMode(_m1Pin, OUTPUT);
         if (_auxPin >= 0) pinMode(_auxPin, INPUT);
 
         if (!_setMode(E220_Mode::NORMAL)) {
-            DEBUG(Serial.println("E220 Error: Failed to set normal mode"));
+            _writeLog("E220 Error: Failed to set normal mode", E220_LogLevel::ERROR);
             return false;
         } // デフォルトはノーマルモード
 
         this->_clearSerialBuffer(); // シリアルバッファをクリアする
-        return this->readConfig(); // モジュールの設定を読み込む
+        return true;
     }
     /**
      * @brief データを送信する
@@ -305,16 +323,32 @@ public:
      * @note 送信モードが固定モードの場合は、透過モードで送信しない。
      */
     bool send(const uint8_t* data, size_t length) {
-        if (!_serial || (!data && length > 0)) return false;
-        if (length == 0) return true;
-        if (!_setMode(E220_Mode::NORMAL)) return false;
-
-        if(this->getSendMode() != E220_SendMode::MODE_TRANSPARENT) return false; // 送信モードが固定モードの場合は、透過モードで送信しない
+        if(!_serial || (!data && length > 0)) {
+            _writeLog("E220 Error: Invalid data or length in send.", E220_LogLevel::ERROR); 
+            return false;
+        }
+        if(!_setMode(E220_Mode::NORMAL)) {
+            _writeLog("E220 Error: Failed to set normal mode in send.", E220_LogLevel::ERROR);
+            return false;
+        }
+        if(length == 0) {
+            _writeLog("E220 Info: No data to send in send.", E220_LogLevel::INFO);
+            return true;
+        }
+        if(this->getSendMode() != E220_SendMode::MODE_TRANSPARENT) {
+            _writeLog("E220 Error: Send mode is not transparent in send.", E220_LogLevel::ERROR);
+            return false;
+        } // 送信モードが固定モードの場合は、透過モードで送信しない
 
         const size_t written = _serial->write(data, length);
         _serial->flush();
-        _waitAUX();
-        return written == length;
+
+        if(!_waitAUX()){ // 書込みが完了するまで待機
+            _writeLog("E220 Error: Timeout waiting for AUX pin to go HIGH after sending data", E220_LogLevel::ERROR);
+            return false;
+        }
+
+        return written == length; // そう書込み数が送信したいデータの長さと同じ場合はtrue
     }
     /**
      * @brief データを送信する (アドレスとチャンネルを指定)
@@ -325,11 +359,22 @@ public:
      * @note 送信モードが透過モードの場合は、アドレスとチャンネルを指定して送信できない
      */
     bool send(const uint8_t* data, size_t length, uint16_t targetAddress, uint8_t targetChannel) {
-        if (!_serial || (!data && length > 0)) return false;
-        if (length == 0) return true;
-        if (!_setMode(E220_Mode::NORMAL)) return false;
-
-        if(this->getSendMode() == E220_SendMode::MODE_TRANSPARENT) return false; // 送信モードが透過モードの場合は、アドレスとチャンネルを指定して送信できない
+        if (!_serial || (!data && length > 0))  {
+            _writeLog("E220 Error: Invalid data or length", E220_LogLevel::ERROR);
+            return false;
+        }
+        if (!_setMode(E220_Mode::NORMAL)) {
+            _writeLog("E220 Error: Failed to set normal mode", E220_LogLevel::ERROR);
+            return false;
+        }
+        if (length == 0) {
+            _writeLog("E220 Info: No data to send", E220_LogLevel::INFO);
+            return true;
+        }
+        if(this->getSendMode() == E220_SendMode::MODE_TRANSPARENT) {
+            _writeLog("E220 Error: Send mode is not transparent", E220_LogLevel::ERROR);
+            return false;
+        } // 送信モードが透過モードの場合は、アドレスとチャンネルを指定して送信できない
 
         const uint8_t header_size = 3;
         const size_t packetLength = header_size + length;
@@ -337,16 +382,18 @@ public:
         uint8_t* packet = new uint8_t[packetLength];
         packet[0] = static_cast<uint8_t>(targetAddress >> 8);   // 高位アドレス
         packet[1] = static_cast<uint8_t>(targetAddress & 0xFF); // 低位アドレス
-        packet[2] = targetChannel;                               // チャンネル
+        packet[2] = targetChannel;                              // チャンネル
         memcpy(packet + header_size, data, length);
 
         const size_t written = _serial->write(packet, packetLength);
         _serial->flush();
-        if (!_waitAUX()) return false;
-
+        if (!_waitAUX()){ // 書込みが完了するまで待機
+            _writeLog("E220 Error: Timeout waiting for AUX pin to go HIGH after sending data", E220_LogLevel::ERROR);
+            return false;
+        }
         delete[] packet;
 
-        return written == packetLength;
+        return written == packetLength; // 書込み数が送信したいデータの長さと同じ場合はtrue
     }
     /**
      * @brief null終端文字列を送信する
@@ -355,7 +402,10 @@ public:
      * @note 送信モードが固定モードの場合は、透過モードで送信しない
      */
     bool send(const char* data) {
-        if (!data) return false;
+        if (!data){
+            _writeLog("E220 Error: Invalid data", E220_LogLevel::ERROR);
+            return false;
+        }
         return send(reinterpret_cast<const uint8_t*>(data), strlen(data));
     }
     /**
@@ -367,7 +417,10 @@ public:
      * @note 送信モードが透過モードの場合は、アドレスとチャンネルを指定して送信できない
      */
     bool send(const char* data, uint16_t targetAddress, uint8_t targetChannel) {
-        if (!data) return false;
+        if (!data){
+            _writeLog("E220 Error: Invalid data", E220_LogLevel::ERROR);
+            return false;
+        }
         return send(reinterpret_cast<const uint8_t*>(data), strlen(data), targetAddress, targetChannel);
     }
     /**
@@ -427,33 +480,47 @@ public:
      * @return 書き込みが成功した場合はtrue、失敗した場合はfalse
      * @note AUXピンが接続されていない場合は、書き込みが成功したかどうかの判定が正確でなくなる可能性がある
      */
-    bool writeConfig(E220_Command saveType = E220_Command::WRITE_PERM) {
+    bool writeConfig(E220_Command saveType = E220_Command::WRITE_PERM)
+    {
         if (!_serial)
             return false;
-        
+
         if (!_setMode(E220_Mode::CONFIG)) {
-            DEBUG(Serial.println("Failed to set config mode"));
+            _writeLog("E220 Error: Failed to set config mode in writeConfig", E220_LogLevel::ERROR);
             return false;
-        } // コンフィグモードへ移行
+        }
 
         _config.format.command = saveType;
         _config.format.registerAddress = 0x00;
         _config.format.length = 0x08;
 
-        this->_clearSerialBuffer(); // コマンド送信前にシリアルバッファをクリアする
+        _clearSerialBuffer();
 
-        // 11バイト送信
-        _serial->write(_config.bytes, sizeof(_config.bytes));
+        // 設定送信
+        _serial->write(_config.bytes,sizeof(_config.bytes));
         _serial->flush();
+        delay(100);
 
-        // 書込み完了まち
-        this->_waitAUX();
+        bool success = false;
+        uint32_t start = millis();
+        while(millis() - start < this->timeout){
+            if(_serial->available() >= sizeof(_config.bytes)){
+                _serial->readBytes(_config.bytes, sizeof(_config.bytes));
 
-        // 返答待ち (ACKチェック)
-        bool success = this->_readResponse(&_config);
+                if(_config.format.command == E220_Command::ACK)
+                    success = true;
+                
+                break;
+            }
+            delay(1);
+        }
 
-        success = success && this->_setMode(E220_Mode::NORMAL); // ノーマルモードに戻す
-        return success;
+        _clearSerialBuffer();// 残留データを捨てる
+        if(this->_setMode(E220_Mode::NORMAL) == false){
+            _writeLog("E220 Error: Failed to set normal mode in writeConfig", E220_LogLevel::ERROR);
+            return false;
+        }
+        return success; // ノーマルモードに戻す
     }
     /**
      * @brief モジュールから設定を読み込む
@@ -463,7 +530,7 @@ public:
     bool readConfig()
     {
         if (!_setMode(E220_Mode::CONFIG)) {
-            Serial.println("Failed to set config mode");
+            _writeLog("E220 Error: Failed to set config mode in readConfig", E220_LogLevel::ERROR);
             return false;
         }
         _clearSerialBuffer();
@@ -472,7 +539,18 @@ public:
         _serial->write(cmd, sizeof(cmd));
         _serial->flush();
 
-        return _readResponse(&_config);
+        bool success = _readResponse(&_config);
+        if (!success) {
+            _writeLog("E220 Error: Failed to read config", E220_LogLevel::ERROR);
+            return false;
+        }
+        success = success && _setMode(E220_Mode::NORMAL); // ノーマルモードに戻す
+        if (!success) {
+            _writeLog("E220 Error: Failed to set normal mode in readConfig", E220_LogLevel::ERROR);
+            return false;
+        }
+
+        return success;
     }
 
     //SECTION Setters
@@ -481,7 +559,7 @@ public:
      * @param command 設定するコマンド
      * @return *this
      */
-    E220& setCommand(E220_Command command) {
+    E220_Config& setCommand(E220_Command command) {
         this->_config.format.command = command;
         return *this;
     }
@@ -490,7 +568,7 @@ public:
      * @param address 設定するアドレス
      * @return *this
      */
-    E220& setDeviceAddress(uint16_t address) {
+    E220_Config& setDeviceAddress(uint16_t address) {
         this->_config.format.ADDH = (address >> 8) & 0xFF;
         this->_config.format.ADDL = address & 0xFF;
         return *this;
@@ -500,7 +578,7 @@ public:
      * @param key 設定するキー
      * @return *this
      */
-    E220& setCryptKey(uint16_t key) {
+    E220_Config& setCryptKey(uint16_t key) {
         this->_config.format.CRYPT_H = (key >> 8) & 0xFF;
         this->_config.format.CRYPT_L = key & 0xFF;
         return *this;
@@ -510,7 +588,7 @@ public:
      * @param rate 設定する通信速度
      * @return *this
      */
-    E220& setUARTSerialPortRate(E220_UARTSerialPortRate rate) {
+    E220_Config& setUARTSerialPortRate(E220_UARTSerialPortRate rate) {
         this->_config.format.REG0 &= 0x1F;
         this->_config.format.REG0 |= static_cast<uint8_t>(rate);
         return *this;
@@ -520,8 +598,8 @@ public:
      * @param rate 設定する空中通信速度
      * @return *this
      */
-    E220& setAirDataRate(E220_AirDataRate rate) {
-        this->_config.format.REG0 &= 0xE0; // 
+    E220_Config& setAirDataRate(E220_AirDataRate rate) {
+        this->_config.format.REG0 &= 0xE0;
         this->_config.format.REG0 |= static_cast<uint8_t>(rate);
         return *this;
     }
@@ -530,7 +608,7 @@ public:
      * @param length 設定するペイロード長
      * @return *this
      */
-    E220& setPayloadLength(E220_PayloadLength length) {
+    E220_Config& setPayloadLength(E220_PayloadLength length) {
         this->_config.format.REG1 &= 0x3F;
         this->_config.format.REG1 |= static_cast<uint8_t>(length);
         return *this;
@@ -540,7 +618,7 @@ public:
      * @param enable 有効にする場合はtrue、無効にする場合はfalse
      * @return *this
      */
-    E220& setRSSINoiseEnable(bool enable) {
+    E220_Config& setRSSINoiseEnable(bool enable) {
         if(enable)
             this->_config.format.REG1 |= 0x20;
         else
@@ -552,7 +630,7 @@ public:
      * @param power 設定する送信出力
      * @return *this
      */
-    E220& setTxPower(E220_TxPower_22S power) {
+    E220_Config& setTxPower(E220_TxPower_22S power) {
         this->_config.format.REG1 &= 0xF0;
         this->_config.format.REG1 |= static_cast<uint8_t>(power);
         return *this;
@@ -563,9 +641,12 @@ public:
      * @return *this
      * @note データレートによって最大チャンネル数が変わるため、最大チャンネル数を超える値を設定した場合は最大チャンネル数に丸められる
      */ 
-    E220& setFrequencyChannel(uint8_t channel) {
+    E220_Config& setFrequencyChannel(uint8_t channel) {
         uint8_t maxChannel = this->_getMaxChannel();
-        if(channel > maxChannel) channel = maxChannel;
+        if(channel > maxChannel){
+            _writeLog("E220 Warning: Frequency channel out of range", E220_LogLevel::WARN);
+            channel = maxChannel;
+        }
 
         this->_config.format.REG2 = channel;
         return *this;
@@ -575,7 +656,7 @@ public:
      * @param enable 有効にする場合はtrue、無効にする場合はfalse
      * @return *this
      */
-    E220& setRSSIByteEnable(bool enable) {
+    E220_Config& setRSSIByteEnable(bool enable) {
         if(enable)
             this->_config.format.REG3 |= 0x80;
         else
@@ -587,7 +668,7 @@ public:
      * @param mode 設定する送信モード
      * @return *this
      */
-    E220& setSendMode(E220_SendMode mode)
+    E220_Config& setSendMode(E220_SendMode mode)
     {
         this->_config.format.REG3 &= 0xBF; // bit6をクリア
         this->_config.format.REG3 |= static_cast<uint8_t>(mode);
@@ -599,10 +680,17 @@ public:
      * @param cycle 設定するWORサイクル
      * @return *this
      */
-    E220& setWORCycle(E220_WORCycle cycle) {
+    E220_Config& setWORCycle(E220_WORCycle cycle) {
         this->_config.format.REG3 &= 0xF8;
         this->_config.format.REG3 |= static_cast<uint8_t>(cycle);
         return *this;
+    }
+    /**
+     * @brief ログレベルを設定する
+     * @param level 設定するログレベル
+     */
+    void setLogLevel(E220_LogLevel level) {
+        _logLevel = level;
     }
     //!SECTION
 
@@ -694,20 +782,40 @@ public:
     }
     //!SECTION
 
-    void printConfig() const {
-        Serial.println("E220 Configuration:");
-        Serial.print("  Device Address: 0x"); Serial.println(getDeviceAddress(), HEX);
-        Serial.print("  Crypt Key: 0x"); Serial.println(getCryptKey(), HEX);
-        Serial.print("  UART Serial Port Rate: "); Serial.println(static_cast<uint8_t>(getUARTSerialPortRate()));
-        Serial.print("  Air Data Rate: "); Serial.println(static_cast<uint8_t>(getAirDataRate()));
-        Serial.print("  Payload Length: "); Serial.println(static_cast<uint8_t>(getPayloadLength()));
-        Serial.print("  RSSI Noise Enable: "); Serial.println(getRSSINoiseEnable() ? "Enabled" : "Disabled");
-        Serial.print("  Tx Power: "); Serial.println(static_cast<uint8_t>(getTxPower()));
-        Serial.print("  Frequency Channel: "); Serial.println(getFrequencyChannel());
-        Serial.print("  RSSI Byte Enable: "); Serial.println(getRSSIByteEnable() ? "Enabled" : "Disabled");
-        Serial.print("  Send Mode: "); Serial.println(static_cast<uint8_t>(getSendMode()));
-        Serial.print("  WOR Cycle: "); Serial.println(static_cast<uint8_t>(getWORCycle()));
+    //SECTION - Debug
+    /**
+     * @brief 設定情報をシリアルモニタに出力する
+     * @param serial 出力先のシリアルオブジェクト
+     */
+    void printConfig(Stream* serial = &Serial) const {
+        serial->println("E220 Configuration:");
+        serial->print("  Device Address: 0x");      serial->println(getDeviceAddress(), HEX);
+        serial->print("  Crypt Key: 0x");           serial->println(getCryptKey(), HEX);
+        serial->print("  UART Serial Port Rate: "); serial->println(static_cast<uint8_t>(getUARTSerialPortRate()));
+        serial->print("  Air Data Rate: ");         serial->println(static_cast<uint8_t>(getAirDataRate()));
+        serial->print("  Payload Length: ");        serial->println(static_cast<uint8_t>(getPayloadLength()));
+        serial->print("  RSSI Noise Enable: ");     serial->println(getRSSINoiseEnable() ? "Enabled" : "Disabled");
+        serial->print("  Tx Power: ");              serial->println(static_cast<uint8_t>(getTxPower()));
+        serial->print("  Frequency Channel: ");     serial->println(getFrequencyChannel());
+        serial->print("  RSSI Byte Enable: ");      serial->println(getRSSIByteEnable() ? "Enabled" : "Disabled");
+        serial->print("  Send Mode: ");             serial->println(static_cast<uint8_t>(getSendMode()));
+        serial->print("  WOR Cycle: ");             serial->println(static_cast<uint8_t>(getWORCycle()));
     }
+    /**
+     * @brief 設定パケットの生データをシリアルモニタに出力する
+     * @param serial 出力先のシリアルオブジェクト
+     */
+    void printRawBytes(Stream* serial = &Serial) const {
+        serial->println("E220 Raw Bytes:");
+        for (size_t i = 0; i < sizeof(_config.bytes); ++i) {
+            serial->print("0x");
+            if (_config.bytes[i] < 0x10) serial->print("0");
+            serial->print(_config.bytes[i], HEX);
+            if (i < sizeof(_config.bytes) - 1) serial->print(", ");
+        }
+        serial->println();
+    }
+    //!SECTION
 };
 
 #endif // E220_HPP
