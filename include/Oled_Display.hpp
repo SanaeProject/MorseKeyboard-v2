@@ -119,6 +119,61 @@ public:
   }
 
   /**
+   * @brief 指定した行をクリアする
+   * @param line クリアする行番号(0始まり)
+   * @param startChars クリアする開始位置の文字数(省略時は行全体をクリア)
+   * @return OledDisplayの参照
+   */
+  OledDisplay& clearLine(int16_t line, int16_t startChars = -1) {
+    int16_t yPos = line * BASE_CHAR_HEIGHT * this->_textSize + this->_padding.top;
+    int16_t xPos = (startChars == -1) ? 0 : this->_getXPos(startChars) + this->_getXPadding();
+
+    this->_display.fillRect(xPos, yPos, this->_display.width(), BASE_CHAR_HEIGHT * this->_textSize, (uint16_t)SSD1306Color::Black);
+    return *this;
+  }
+
+  /**
+   * @brief 指定した範囲の行をクリアする
+   * @param startLine クリアする開始行番号(0始まり)
+   * @param endLine クリアする終了行番号(0始まり)
+   * @return OledDisplayの参照
+   */
+  OledDisplay& clearLines(int16_t startLine, int16_t endLine) {
+    for(int16_t line = startLine; line <= endLine; ++line) {
+      this->clearLine(line);
+    }
+    return *this;
+  }
+
+  /**
+   * @brief 指定した範囲の矩形を描画する
+   * @param x 矩形の左上のX座標
+   * @param y 矩形の左上のY座標
+   * @param w 矩形の幅
+   * @param h 矩形の高さ
+   * @param color 矩形の色(SSD1306Color::Black, SSD1306Color::White, SSD1306Color::Inverse)
+   * @return OledDisplayの参照
+   */
+  OledDisplay& drawRect(int16_t x, int16_t y, int16_t w, int16_t h, SSD1306Color color = SSD1306Color::White) {
+    this->_display.drawRect(x, y, w, h, (uint16_t)color);
+    return *this;
+  }
+
+  /**
+   * @brief 指定した範囲の矩形を塗りつぶす
+   * @param x0 矩形の左上のX座標
+   * @param y0 矩形の左上のY座標
+   * @param x1 矩形の右下のX座標
+   * @param y1 矩形の右下のY座標
+   * @param color 矩形の色(SSD1306Color::Black, SSD1306Color::White, SSD1306Color::Inverse)
+   * @return OledDisplayの参照
+   */
+  OledDisplay& drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, SSD1306Color color = SSD1306Color::White) {
+    this->_display.drawLine(x0, y0, x1, y1, (uint16_t)color);
+    return *this;
+  }
+
+  /**
    * @brief 文字サイズを設定する
    * @param size 文字サイズ
    * @return OledDisplayの参照
