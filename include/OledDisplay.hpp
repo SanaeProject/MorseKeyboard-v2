@@ -124,11 +124,15 @@ public:
    * @param startChars クリアする開始位置の文字数(省略時は行全体をクリア)
    * @return OledDisplayの参照
    */
-  OledDisplay& clearLine(int16_t line, int16_t startChars = -1) {
+  OledDisplay& clearLine(int16_t line = -1, int16_t startChars = -1) {
     int16_t yPos = line * BASE_CHAR_HEIGHT * this->_textSize + this->_padding.top;
     int16_t xPos = (startChars == -1) ? 0 : this->_getXPos(startChars) + this->_getXPadding();
 
+    if (line == -1)
+      yPos = this->_display.getCursorY();
+
     this->_display.fillRect(xPos, yPos, this->_display.width(), BASE_CHAR_HEIGHT * this->_textSize, (uint16_t)SSD1306Color::Black);
+    this->_display.setTextColor((uint16_t)this->_color);
     return *this;
   }
 
@@ -158,6 +162,19 @@ public:
     this->_display.drawRect(x, y, w, h, (uint16_t)color);
     return *this;
   }
+  /**
+   * @brief 指定した範囲の矩形を塗りつぶす
+   * @param x 矩形の左上のX座標
+   * @param y 矩形の左上のY座標
+   * @param w 矩形の幅
+   * @param h 矩形の高さ
+   * @param color 矩形の色(SSD1306Color::Black, SSD1306Color::White, SSD1306Color::Inverse)
+   * @return OledDisplayの参照
+   */
+  OledDisplay& fillRect(int16_t x, int16_t y, int16_t w, int16_t h, SSD1306Color color = SSD1306Color::White) {
+    this->_display.fillRect(x, y, w, h, (uint16_t)color);
+    return *this;
+  }
 
   /**
    * @brief 指定した範囲の矩形を塗りつぶす
@@ -170,6 +187,19 @@ public:
    */
   OledDisplay& drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, SSD1306Color color = SSD1306Color::White) {
     this->_display.drawLine(x0, y0, x1, y1, (uint16_t)color);
+    return *this;
+  }
+
+  /**
+   * @brief 指定した円を描画する
+   * @param x0 円の中心のX座標
+   * @param y0 円の中心のY座標
+   * @param r 円の半径
+   * @param color 円の色(SSD1306Color::Black, SSD1306Color::White, SSD1306Color::Inverse)
+   * @return OledDisplayの参照
+   */
+  OledDisplay& drawCircle(int16_t x0, int16_t y0, int16_t r, SSD1306Color color = SSD1306Color::White) {
+    this->_display.drawCircle(x0, y0, r, (uint16_t)color);
     return *this;
   }
 
@@ -217,6 +247,53 @@ public:
   }
 
   /**
+   * @brief カーソル位置を次の行に移動する
+   * @return OledDisplayの参照
+   */
+  OledDisplay& nextLine() {
+    int16_t y = this->_display.getCursorY();
+    y += BASE_CHAR_HEIGHT * this->_textSize;
+    this->_display.setCursor(0, y);
+    return *this;
+  }
+
+  /**
+   * @brief カーソル位置を取得する
+   * @return カーソル位置のX座標
+   */
+  int16_t getCursorX() const {
+    return this->_display.getCursorX();
+  }
+  /**
+   * @brief カーソル位置を取得する
+   * @return カーソル位置のY座標
+   */
+  int16_t getCursorY() const {
+    return this->_display.getCursorY();
+  }
+  /**
+   * @brief OLEDの幅を取得する
+   * @return OLEDの幅
+   */
+  int16_t getWidth() const {
+    return this->_display.width();
+  }
+  /**
+   * @brief OLEDの高さを取得する
+   * @return OLEDの高さ
+   */
+  int16_t getHeight() const {
+    return this->_display.height();
+  }
+  /**
+   * @brief パディングを取得する
+   * @return パディング
+   */
+  Padding getPadding() const {
+    return this->_padding;
+  }
+
+  /**
    * @brief 文字列をOLEDに出力する
    * @param str 出力する文字列
    * @param line 出力する行番号(0始まり)。省略した場合はカーソル位置に出力される
@@ -244,6 +321,18 @@ public:
     this->_display.display();
     return *this;
   }
+  /**
+   * @brief 文字列をOLEDに出力する
+   * @param str 出力する文字列
+   * @param line 出力する行番号(0始まり)。省略した場合はカーソル位置に出力される
+   * @return OledDisplayの参照
+   */
+  OledDisplay& println(const String& str, int16_t line = INT16_MAX) {
+    this->write(str, line);
+    this->nextLine();
+    this->_display.display();
+    return *this;
+  }
 
   /**
    * @brief 文字列をOLEDに出力する
@@ -252,11 +341,12 @@ public:
    * @return OledDisplayの参照
    */
   OledDisplay& write(const char* str, int16_t line = INT16_MAX) {
-    if(line != INT16_MAX) {
-      int16_t xPos = this->_getXPos(strlen(str)) + this->_getXPadding();
-      int16_t yPos = line * BASE_CHAR_HEIGHT * this->_textSize + this->_padding.top;
-      this->_display.setCursor(xPos, yPos);
-    }
+    int16_t xPos = this->_getXPos(strlen(str)) + this->_getXPadding();
+    int16_t yPos = this->_display.getCursorY();
+    
+    if(line != INT16_MAX)
+      yPos = line * BASE_CHAR_HEIGHT * this->_textSize + this->_padding.top;
+    this->_display.setCursor(xPos, yPos);
 
     this->_display.print(str);
     return *this;
@@ -270,6 +360,18 @@ public:
    */
   OledDisplay& print(const char* str, int16_t line = INT16_MAX) {
     this->write(str, line);
+    this->_display.display();
+    return *this;
+  }
+  /**
+   * @brief 文字列をOLEDに出力する
+   * @param str 出力する文字列
+   * @param line 出力する行番号(0始まり)。省略した場合はカーソル位置に出力される
+   * @return OledDisplayの参照
+   */
+  OledDisplay& println(const char* str, int16_t line = INT16_MAX) {
+    this->write(str, line);
+    this->nextLine();
     this->_display.display();
     return *this;
   }
