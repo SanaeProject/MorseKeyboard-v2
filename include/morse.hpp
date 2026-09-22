@@ -8,8 +8,8 @@
 #define MORSE_KEY_NONE 0            // 返却値なし
 #define MORSE_MAX_LENGTH 8          // モールス信号の最大長
 #define MORSE_DAH_DURATION_MS 300   // モールス信号ダッシュ長
-#define MORSE_END_DURATION_MS 600  // モールス信号終了判定時間
-#define MORSE_INTERVAL_MS     20   // ボタン押下、判定後待機時間
+#define MORSE_END_DURATION_MS 600   // モールス信号終了判定時間
+#define MORSE_INTERVAL_MS     0     // ボタン押下、判定後待機時間
 
 // モールス信号構造体
 typedef struct {
@@ -64,10 +64,11 @@ class MorseSignalReader {
 private:
     uint32_t _signalPin;
     uint32_t _dahSignalPin;
-    uint8_t  _signals[MORSE_MAX_LENGTH];
+    uint8_t  _signals[MORSE_MAX_LENGTH] = {0};
 
     bool     _isStarted           = false;
     bool     _isPreviousPushed    = false;
+    bool     _isPreviousDahPushed = false;
 
     uint8_t  _signalIdx           = 0;
     Timer    _buttonPressDuration;
@@ -95,6 +96,12 @@ protected:
         }
 
         return '?';
+    }
+    inline void _pushSignal(uint8_t signalValue){
+        if(this->_signalIdx >= MORSE_MAX_LENGTH) return; // バッファ長を超える書き込みを防止
+        this->_signals[this->_signalIdx] = signalValue;
+        this->_signalIdx++;
+        this->_intervalDuration.start();
     }
     inline bool _getDahSignal(){
         if(this->_dahSignalPin == UINT32_MAX) return false;
@@ -128,7 +135,12 @@ public:
 
         // 待機時間中は返却なし
         if(this->_intervalDuration.isRunning() && 
-            this->_intervalDuration.elapsed() < MORSE_INTERVAL_MS) return MORSE_KEY_NONE;
+            this->_intervalDuration.elapsed() < MORSE_INTERVAL_MS)
+        {
+            this->_isPreviousPushed = signal;          // 待機中も押下状態は更新しておく
+            this->_isPreviousDahPushed = dahSignal;
+            return MORSE_KEY_NONE;
+        }
 
         // キー判定開始
         if(!this->_isStarted && (signal || dahSignal)){
@@ -138,11 +150,13 @@ public:
         if(!this->_isStarted) return MORSE_KEY_NONE;
 
         // キー判定
-        if((!signal && !this->_isPreviousPushed && MORSE_END_DURATION_MS < this->_buttonPressDuration.elapsed()) || // ボタンが押下されずに一定時間たった場合
+        if((!signal && !dahSignal && !this->_isPreviousPushed && MORSE_END_DURATION_MS < this->_buttonPressDuration.elapsed()) || // ボタンが押下されずに一定時間たった場合
             this->_signalIdx == MORSE_MAX_LENGTH) // シグナルが最大長に達した場合
         {
             this->_isStarted = false;
             this->_signalIdx = 0;
+            this->_isPreviousPushed = signal;          // 確定時も押下状態を更新して次回の誤検出を防ぐ
+            this->_isPreviousDahPushed = dahSignal;
 
             char result = _searchDictionary(this->_signals);
             memset(this->_signals, 0, MORSE_MAX_LENGTH);
@@ -153,21 +167,18 @@ public:
 
         // 長音単音判定
         if(!signal && this->_isPreviousPushed){ // ボタンが押されていない且つ前回は押されていた場合短音と長音を判定
-            this->_signals[this->_signalIdx] = this->_buttonPressDuration.elapsed() < MORSE_DAH_DURATION_MS ? 1 : 2;
-            this->_signalIdx++;
-            this->_intervalDuration.start();
+            this->_pushSignal(this->_buttonPressDuration.elapsed() < MORSE_DAH_DURATION_MS ? 1 : 2);
         }
         // 押下状態に過去と変更があった場合タイマーをリセット
-        if(signal != this->_isPreviousPushed) this->_buttonPressDuration.start();
+        if(signal != this->_isPreviousPushed || dahSignal != this->_isPreviousDahPushed) this->_buttonPressDuration.start();
 
         // 長音キーがある場合、長音キーの状態を確認して長音信号を追加する
-        if(dahSignal){
-            this->_signals[this->_signalIdx] = 2;
-            this->_signalIdx++;
-            this->_intervalDuration.start();
+        if(dahSignal && !this->_isPreviousDahPushed){ // 押された瞬間の1回だけ追加する
+            this->_pushSignal(2);
         }
 
         this->_isPreviousPushed = signal; // 過去の押下状態を保存
+        this->_isPreviousDahPushed = dahSignal;
 
         return MORSE_KEY_NONE;
     }

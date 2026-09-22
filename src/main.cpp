@@ -22,12 +22,9 @@
 #define AUX_PIN  2
 #define TX_PIN   16
 #define RX_PIN   17
-#define CHANNEL  11
 
 // Morse
-#define SIGNAL_PIN      19
-#define DAH_SIGNAL_PIN  20
-#define BUZZER_PIN      8
+#define SIGNAL_PIN      21
 
 // 動作モード
 enum class AppMode {
@@ -35,7 +32,8 @@ enum class AppMode {
     MORSE_KEYBOARD,
     LORA_COMMUNICATION,
     SETTINGS,
-    RSSI_MONITOR
+    RSSI_MONITOR,
+    ABOUT
 };
 
 //SECTION Global Variables
@@ -48,8 +46,22 @@ Adafruit_SSD1306      display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 OledDisplay           oledDisplay(display, 1, SSD1306Color::White, Align::Left);
 
 // Settings
+// Settings
 uint16_t tempAddress = 0;
-uint16_t tempChannel = 0;
+uint8_t  tempChannel = 0;
+uint16_t tempTargetAddress = 0;
+uint16_t tempCryptKey = 0;
+
+enum class SettingsItem {
+    ADDRESS,
+    CHANNEL,
+    SEND_MODE,
+    TARGET_ADDRESS,
+    CRYPT_KEY
+};
+
+SettingsItem settingsItem = SettingsItem::ADDRESS;
+String settingsInput = "";
 
 // Lora
 constexpr uint8_t MAX_MESSAGE_ROWS = 3;
@@ -70,10 +82,11 @@ Timer rssiTimer;
 //!SECTION
 
 //SECTION プロトタイプ宣言
-void mainMenu(); //ANCHOR - Main Menu
+void mainMenu();          //ANCHOR - Main Menu
 void loraCommunication(); //ANCHOR - LoRa Communication
-void morseKeyboard(); //ANCHOR - Morse Keyboard
-void rssiMonitor();
+void morseKeyboard();     //ANCHOR - Morse Keyboard
+void rssiMonitor();       //ANCHOR - RSSI Noise Monitor
+void settings();          //ANCHOR - Settings
 //!SECTION
 
 //SECTION entry
@@ -103,6 +116,8 @@ void setup(){
     // 前回の引継ぎ
     tempAddress = e220.getDeviceAddress();
     tempChannel = e220.getFrequencyChannel();
+    tempTargetAddress = tempAddress;
+    tempCryptKey = e220.getCryptKey();
 
     const bool written = e220.setDeviceAddress(tempAddress)
         .setUARTSerialPortRate(E220_UARTSerialPortRate::RATE_9600)
@@ -114,13 +129,13 @@ void setup(){
         .setRSSIByteEnable(false)
         .setSendMode(E220_SendMode::MODE_TRANSPARENT)
         .setWORCycle(E220_WORCycle::CYCLE_500MS)
-        .setCryptKey(0x0000)
+        .setCryptKey(tempCryptKey)
         .writeConfig();
     if (!written)
         ERROR(Serial.println("E220 Failed to config write."));
 
     // Morse
-    morse.begin(SIGNAL_PIN, DAH_SIGNAL_PIN);
+    morse.begin(SIGNAL_PIN);
 
     // 完了画面
     Serial.println("===========Setup complete===========");
@@ -131,6 +146,7 @@ void setup(){
         .println("Morse Keyboard v2")
         .setAlign(Align::Right)
         .println("by SanaeProject")
+        .nextLine()
         .setAlign(Align::Left)
         .println("Author: SanaeProject")
         .println("Version: 1.0.0");
@@ -138,8 +154,19 @@ void setup(){
     delay(2000);
     oledDisplay.clear();
 }
+
+bool isPressed = false;
 // ANCHOR Loop
 void loop(){
+    bool pressed = digitalRead(SIGNAL_PIN) == LOW;
+    if(pressed && !isPressed){
+        Serial.println("Button pressed");
+        isPressed = true;
+    } else if(!pressed && isPressed){
+        Serial.println("Button released");
+        isPressed = false;
+    }
+
     switch(currentMode){
     case AppMode::MAIN_MENU:
         mainMenu();
@@ -154,9 +181,11 @@ void loop(){
         rssiMonitor();
         break;
     case AppMode::SETTINGS:
-        mainMenu();
+        settings();
         break;
     }
+
+    delay(2);
 }
 //!SECTION
 
@@ -173,26 +202,29 @@ void mainMenu(){
     // content
     oledDisplay.nextLine()
         .setAlign(Align::Left)
-        .println("A(.-)  :Keyboard")
-        .println("B(-...):LoRaComm")
-        .println("C(-.-.):RSSIMonitor")
-        .println("D(-..) :Settings")
-        .println("E(.)   :About");
+        .println("E(.)   :Keyboard")
+        .println("T(-)   :LoRaComm")
+        .println("A(.-)  :RSSIMonitor")
+        .println("I(..)  :Settings")
+        .println("M(--)  :About");
 
     char key = morse.getKey();
     AppMode previousMode = currentMode;
     switch(key){
-    case 'a':
+    case 'e':
         currentMode = AppMode::MORSE_KEYBOARD;
         break;
-    case 'b':
+    case 't':
         currentMode = AppMode::LORA_COMMUNICATION;
         break;
-    case 'c':
+    case 'a':
         currentMode = AppMode::RSSI_MONITOR;
         break;
-    case 'd':
+    case 'i':
         currentMode = AppMode::SETTINGS;
+        break;
+    case 'm':
+        currentMode = AppMode::ABOUT;
         break;
     case MORSE_KEY_NONE:
         break;
@@ -257,7 +289,11 @@ void loraCommunication() {
         Serial.print("Morse Key: ");
         Serial.println(key);
 
-        e220.send((uint8_t*)&key, 1);
+        if(e220.getSendMode() == E220_SendMode::MODE_TRANSPARENT)
+            e220.send((uint8_t*)&key, 1);
+        else
+            e220.send((uint8_t*)&key, 1, tempTargetAddress,tempChannel);
+
         loraInsertBuffer(key, sentMessage, sentMessageRow, sentMessageCol);
     }
 
@@ -284,6 +320,12 @@ void morseKeyboard(){
             .println("Keyboard is not connected.");
     }
     char key = morse.getKey();
+
+    if(key == '\e'){
+        currentMode = AppMode::MAIN_MENU;
+        oledDisplay.clear();
+        return;
+    }
     if(key != MORSE_KEY_NONE){
         Serial.print("Morse Key: " + String(key));
         oledDisplay.clearLine()
@@ -364,5 +406,178 @@ void rssiMonitor(){
     noises[lastIdx] = rssi;
 
     viewGraph();
+}
+//ANCHOR - Settings
+//ANCHOR - Settings
+void settings(){
+    static SettingsItem item = SettingsItem::ADDRESS;
+    static bool editing = false;
+    static bool dirty = true; // 描画更新が必要かどうかのフラグ
+
+    // --- 1. 入力処理 ---
+    char key = morse.getKey();
+
+    if(key != MORSE_KEY_NONE){
+        dirty = true; // キー入力があったので画面を更新する
+
+        // ESC (戻る / キャンセル)
+        if(key == '\e'){
+            if(editing){
+                editing = false;
+            }else{
+                currentMode = AppMode::MAIN_MENU;
+            }
+            oledDisplay.clear();
+            return;
+        }
+
+        // 編集中（値の変更）
+        if(editing){
+            switch(item){
+            case SettingsItem::ADDRESS:
+                if(key == 'e') { if(tempAddress < 0xFFFF) ++tempAddress; }
+                else if(key == 't') { if(tempAddress > 0) --tempAddress; }
+                break;
+
+            case SettingsItem::CHANNEL:
+                if(key == 'e') { if(tempChannel < 37) ++tempChannel; }
+                else if(key == 't') { if(tempChannel > 0) --tempChannel; }
+                break;
+
+            case SettingsItem::SEND_MODE:
+                if(key == 'e' || key == 't'){
+                    if(e220.getSendMode() == E220_SendMode::MODE_TRANSPARENT)
+                        e220.setSendMode(E220_SendMode::MODE_FIXED);
+                    else
+                        e220.setSendMode(E220_SendMode::MODE_TRANSPARENT);
+                }
+                break;
+
+            case SettingsItem::TARGET_ADDRESS:
+                if(key == 'e') { if(tempTargetAddress < 0xFFFF) ++tempTargetAddress; }
+                else if(key == 't') { if(tempTargetAddress > 0) --tempTargetAddress; }
+                break;
+
+            case SettingsItem::CRYPT_KEY:
+                if(key == 'e') { if(tempCryptKey < 0xFFFF) ++tempCryptKey; }
+                else if(key == 't') { if(tempCryptKey > 0) --tempCryptKey; }
+                break;
+            }
+
+            // Enter('\n')で決定
+            if(key == '\n'){
+                editing = false;
+            }
+
+            oledDisplay.clear();
+        } 
+        // 項目選択モード
+        else {
+            switch(key){
+            case 'e': // (.) Address
+                item = SettingsItem::ADDRESS;
+                editing = true;
+                break;
+
+            case 't': // (-) Channel
+                item = SettingsItem::CHANNEL;
+                editing = true;
+                break;
+
+            case 'a': // (.-) SendMode
+                item = SettingsItem::SEND_MODE;
+                editing = true;
+                break;
+
+            case 'i': // (..) Target Address
+                item = SettingsItem::TARGET_ADDRESS;
+                editing = true;
+                break;
+
+            case 'm': // (--) Crypt Key
+                item = SettingsItem::CRYPT_KEY;
+                editing = true;
+                break;
+
+            case '\n': // 保存
+                e220.setDeviceAddress(tempAddress)
+                    .setFrequencyChannel(tempChannel)
+                    .setCryptKey(tempCryptKey)
+                    .writeConfig();
+
+                oledDisplay.clear();
+                break;
+            }
+
+            oledDisplay.clear();
+        }
+    }
+
+    // --- 2. 描画処理（変化があった時だけ描画する） ---
+    if(!dirty) return;
+    dirty = false; // 描画処理を行うのでフラグを下げる
+
+    oledDisplay.setTextSize(1)
+        .setCursor(0, 0)
+        .setAlign(Align::Center)
+        .println("Settings")
+        .drawRect(
+            0,
+            oledDisplay.getCursorY(),
+            oledDisplay.getWidth(),
+            1,
+            SSD1306Color::White
+        );
+
+    oledDisplay.nextLine()
+        .setAlign(Align::Left);
+
+    if(!editing){
+        oledDisplay.println("E(.)  : Address");
+        oledDisplay.println("T(-)  : Channel");
+        oledDisplay.println("A(.-) : SendMode");
+        oledDisplay.println("I(..) : TargetAddr");
+        oledDisplay.println("M(--) : CryptKey");
+        oledDisplay.println("Enter : Save");
+        oledDisplay.println("ESC   : Back");
+    }else{
+        switch(item){
+        case SettingsItem::ADDRESS:
+            oledDisplay.println("Address");
+            oledDisplay.println("0x" + String(tempAddress, HEX));
+            break;
+
+        case SettingsItem::CHANNEL:
+            oledDisplay.println("Channel");
+            oledDisplay.println(String(tempChannel));
+            break;
+
+        case SettingsItem::SEND_MODE:
+            oledDisplay.println("SendMode");
+            oledDisplay.println(
+                e220.getSendMode() == E220_SendMode::MODE_TRANSPARENT
+                    ? "TRANSPARENT"
+                    : "FIXED"
+            );
+            break;
+
+        case SettingsItem::TARGET_ADDRESS:
+            oledDisplay.println("Target Addr");
+            oledDisplay.println("0x" + String(tempTargetAddress, HEX));
+            break;
+
+        case SettingsItem::CRYPT_KEY:
+            oledDisplay.println("CryptKey");
+            oledDisplay.println("0x" + String(tempCryptKey, HEX));
+            break;
+        }
+
+        oledDisplay.println("")
+            .println("E(.): UP / T(-): DOWN")
+            .println("Enter: OK")
+            .println("ESC: Cancel");
+    }
+
+    oledDisplay.display();
 }
 //!SECTION
