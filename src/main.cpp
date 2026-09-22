@@ -33,7 +33,7 @@ enum class AppMode {
     LORA_COMMUNICATION,
     SETTINGS,
     RSSI_MONITOR,
-    ABOUT
+    SCHEDULE,
 };
 
 //SECTION Global Variables
@@ -45,7 +45,6 @@ HijelHID_BLEKeyboard  keyboard("MorseKeyboard", "SanaeProject", 100);
 Adafruit_SSD1306      display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 OledDisplay           oledDisplay(display, 1, SSD1306Color::White, Align::Left);
 
-// Settings
 // Settings
 uint16_t tempAddress = 0;
 uint8_t  tempChannel = 0;
@@ -79,6 +78,12 @@ constexpr size_t GRAPH_REFRESH = 1000; // 1秒ごとに更新
 int16_t noises[GRAPH_LENGTH];
 size_t lastIdx = GRAPH_LENGTH-1;
 Timer rssiTimer;
+
+// Schedule
+String scheduleMessage = "";
+Timer scheduleTimer;
+uint8_t scheduleCnt = 0;
+
 //!SECTION
 
 //SECTION プロトタイプ宣言
@@ -87,6 +92,7 @@ void loraCommunication(); //ANCHOR - LoRa Communication
 void morseKeyboard();     //ANCHOR - Morse Keyboard
 void rssiMonitor();       //ANCHOR - RSSI Noise Monitor
 void settings();          //ANCHOR - Settings
+void schedule();          //ANCHOR - Schedule
 //!SECTION
 
 //SECTION entry
@@ -183,6 +189,9 @@ void loop(){
     case AppMode::SETTINGS:
         settings();
         break;
+    case AppMode::SCHEDULE:
+        schedule();
+        break;
     }
 
     delay(2);
@@ -206,7 +215,7 @@ void mainMenu(){
         .println("T(-)   :LoRaComm")
         .println("A(.-)  :RSSIMonitor")
         .println("I(..)  :Settings")
-        .println("M(--)  :About");
+        .println("M(--)  :Schedule");
 
     char key = morse.getKey();
     AppMode previousMode = currentMode;
@@ -224,7 +233,7 @@ void mainMenu(){
         currentMode = AppMode::SETTINGS;
         break;
     case 'm':
-        currentMode = AppMode::ABOUT;
+        currentMode = AppMode::SCHEDULE;
         break;
     case MORSE_KEY_NONE:
         break;
@@ -579,5 +588,84 @@ void settings(){
     }
 
     oledDisplay.display();
+}
+
+//ANCHOR - Schedule
+void schedule() {
+    oledDisplay
+        .setTextSize(1)
+        .setCursor(0, 0)
+        .setAlign(Align::Center)
+        .println("Schedule")
+        .drawRect(0, oledDisplay.getCursorY(), oledDisplay.getWidth(), 1, SSD1306Color::White);
+
+    // タイマースタート
+    if (scheduleMessage.length() != 0 && !scheduleTimer.isRunning() && scheduleMessage.endsWith("\n"))
+        scheduleTimer.start();
+
+    // 送信
+    if (scheduleMessage.length() != 0 && scheduleTimer.isRunning() && scheduleMessage.endsWith("\n") && scheduleTimer.elapsed() >= 5000) {
+
+        scheduleTimer.start();
+        String fullMessage = String(scheduleCnt) + "-" + scheduleMessage;
+
+        if (e220.getSendMode() == E220_SendMode::MODE_TRANSPARENT)
+            e220.send((uint8_t*)fullMessage.c_str(), fullMessage.length());
+        else
+            e220.send((uint8_t*)fullMessage.c_str(),fullMessage.length(),tempTargetAddress,tempChannel);
+
+        oledDisplay.clear();
+        oledDisplay
+            .setTextSize(2)
+            .setCursor(0, 16)
+            .setAlign(Align::Center)
+            .println("success!");
+
+        oledDisplay
+            .setTextSize(1)
+            .setCursor(0, 42)
+            .setAlign(Align::Center)
+            .println(
+                "Message " + String(scheduleCnt)
+            );
+
+        scheduleCnt++;
+
+        return;
+    }
+
+    oledDisplay
+        .nextLine()
+        .setTextSize(1)
+        .setAlign(Align::Left)
+        .println("Message:");
+    oledDisplay.println(scheduleMessage);
+
+    // morse信号の入力
+    char key = morse.getKey();
+    if (key == '\e') {
+
+        currentMode = AppMode::MAIN_MENU;
+
+        oledDisplay.clear();
+        scheduleTimer.stop();
+        scheduleCnt = 0;
+        scheduleMessage = "";
+
+        return;
+    }
+
+    if (key != MORSE_KEY_NONE && key != '?') {
+
+        oledDisplay
+            .clearLine()
+            .setAlign(Align::Center)
+            .println("Morse Key: " + String(key));
+
+        scheduleMessage += key;
+
+        oledDisplay
+            .println("Message: " + scheduleMessage);
+    }
 }
 //!SECTION
