@@ -26,6 +26,9 @@
 // Morse
 #define SIGNAL_PIN      21
 
+// Battery
+#define BATTERY_PIN     19
+
 // 動作モード
 enum class AppMode {
     MAIN_MENU,
@@ -159,10 +162,11 @@ void setup(){
         
     delay(2000);
     oledDisplay.clear();
+    pinMode(BATTERY_PIN, INPUT);
 }
 
-bool isPressed = false;
 // ANCHOR Loop
+bool isPressed = false;
 void loop(){
     bool pressed = digitalRead(SIGNAL_PIN) == LOW;
     if(pressed && !isPressed){
@@ -215,7 +219,8 @@ void mainMenu(){
         .println("T(-)   :LoRaComm")
         .println("A(.-)  :RSSIMonitor")
         .println("I(..)  :Settings")
-        .println("M(--)  :Schedule");
+        .println("M(--)  :Schedule")
+        .println("N(-.)  :Clear Paired");
 
     char key = morse.getKey();
     AppMode previousMode = currentMode;
@@ -234,6 +239,17 @@ void mainMenu(){
         break;
     case 'm':
         currentMode = AppMode::SCHEDULE;
+        break;
+    case 'n':
+        keyboard.clearBonds();
+        oledDisplay.clear()
+            .setAlign(Align::Center)
+            .setCursor(0, oledDisplay.getHeight() / 2 - BASE_CHAR_HEIGHT)
+            .println("Cleared paired devices");
+        delay(2000);
+        oledDisplay.clear();
+
+        currentMode = AppMode::MAIN_MENU;
         break;
     case MORSE_KEY_NONE:
         break;
@@ -322,21 +338,20 @@ void morseKeyboard(){
         .drawRect(0, oledDisplay.getCursorY(), oledDisplay.getWidth(), 1, SSD1306Color::White)
         .nextLine();
 
-    if(!keyboard.isConnected()){
+    if(!keyboard.isConnected() || !keyboard.isPaired()){
         Serial.println("Keyboard is not connected.");
         oledDisplay.clearLine()
             .setAlign(Align::Left)
             .println("Keyboard is not connected.");
     }
-    char key = morse.getKey();
 
+    char key = morse.getKey();
     if(key == '\e'){
         currentMode = AppMode::MAIN_MENU;
         oledDisplay.clear();
         return;
     }
     if(key != MORSE_KEY_NONE){
-        Serial.print("Morse Key: " + String(key));
         oledDisplay.clearLine()
             .setAlign(Align::Center)
             .println("Morse Key: " + String(key));

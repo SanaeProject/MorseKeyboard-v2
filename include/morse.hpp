@@ -182,6 +182,22 @@ public:
 
         return MORSE_KEY_NONE;
     }
+
+    /**
+     * @brief モールス信号の判定(ブロッキング)
+     * @return 判定結果の文字列
+     * @param timeout タイムアウト時間（ミリ秒）
+     */
+    char getKeyAwait(uint32_t timeout = UINT32_MAX){
+        Timer intervalTimer;
+        intervalTimer.start();
+
+        char key;
+        while((key = this->getKey()) == MORSE_KEY_NONE && (timeout != UINT32_MAX && intervalTimer.elapsed() < timeout)) delay(1);
+        if(timeout != UINT32_MAX && intervalTimer.elapsed() >= timeout) return MORSE_KEY_NONE;
+
+        return key;
+    }
 };
 
 #endif // MORSE_KEYBOARD_HPP
