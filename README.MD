@@ -7,6 +7,11 @@
 - Bluetoothを用いたキーボード入力
 - [LoRA](https://ja.wikipedia.org/wiki/LoRa)通信を用いた機器同士の通信
 
+> [!WARNING]
+> LoRA通信を行う場合は、[LoRA](https://ja.wikipedia.org/wiki/LoRa)の周波数帯域に注意してください。
+> 日本では、920MHz帯を使用する必要があります。
+> また、技適マークのないLoRAモジュールを使用する場合は、電波法違反となる可能性がありますので、注意してください。
+
 ### Bluetoothキーボード入力
 
 モールス信号を用いて、Bluetoothキーボードとして動作することができます。  
